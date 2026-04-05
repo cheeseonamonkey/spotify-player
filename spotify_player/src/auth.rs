@@ -1,5 +1,5 @@
 use crate::config;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use librespot_core::{authentication::Credentials, cache::Cache, config::SessionConfig, Session};
 use librespot_oauth::OAuthClientBuilder;
 
@@ -37,6 +37,7 @@ pub const OAUTH_SCOPES: &[&str] = &[
 pub struct AuthConfig {
     pub cache: Cache,
     pub session_config: SessionConfig,
+    pub client_id: String,
     pub login_redirect_uri: String,
 }
 
@@ -45,6 +46,7 @@ impl Default for AuthConfig {
         AuthConfig {
             cache: Cache::new(None::<String>, None, None, None).unwrap(),
             session_config: SessionConfig::default(),
+            client_id: SPOTIFY_CLIENT_ID.to_string(),
             login_redirect_uri: "http://127.0.0.1:8989/login".to_string(),
         }
     }
@@ -73,8 +75,55 @@ impl AuthConfig {
         Ok(AuthConfig {
             cache,
             session_config: configs.app_config.session_config(),
+            client_id: configs
+                .app_config
+                .get_user_client_id()?
+                .unwrap_or_else(|| SPOTIFY_CLIENT_ID.to_string()),
             login_redirect_uri: configs.app_config.login_redirect_uri.clone(),
         })
+    }
+}
+
+fn short(value: &str) -> String {
+    match value.len() {
+        0..=12 => value.to_string(),
+        len => format!("{}…{}", &value[..4], &value[len - 4..]),
+    }
+}
+
+fn is_likely_headless() -> bool {
+    std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none()
+}
+
+fn print_auth_triage(auth_config: &AuthConfig, callback_received: Option<bool>) {
+    let callback_received = match callback_received {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    };
+
+    eprintln!();
+    eprintln!("auth triage");
+    eprintln!("  {:<22} {}", "client_id", short(&auth_config.client_id));
+    eprintln!("  {:<22} {}", "redirect_uri", auth_config.login_redirect_uri);
+    eprintln!("  {:<22} {}", "callback received", callback_received);
+
+    if auth_config.login_redirect_uri.contains("localhost") {
+        eprintln!("  {:<22} {}", "note", "use 127.0.0.1, not localhost");
+    }
+
+    eprintln!();
+    eprintln!("hint");
+    eprintln!("  Spotify requires redirect_uri to match exactly across authorize and token exchange.");
+
+    if is_likely_headless() {
+        eprintln!();
+        eprintln!("headless hint");
+        eprintln!("  Try:");
+        eprintln!(
+            "  curl \"{}?code=...&state=...\"",
+            auth_config.login_redirect_uri
+        );
     }
 }
 
@@ -98,15 +147,18 @@ pub fn get_creds(auth_config: &AuthConfig, reauth: bool, use_cached: bool) -> Re
                 eprintln!("{msg}");
 
                 let client_builder = OAuthClientBuilder::new(
-                    SPOTIFY_CLIENT_ID,
+                    &auth_config.client_id,
                     &auth_config.login_redirect_uri,
                     OAUTH_SCOPES.to_vec(),
                 )
                 .open_in_browser();
                 let oauth_client = client_builder.build()?;
-                oauth_client
-                    .get_access_token()
-                    .map(|t| Credentials::with_access_token(t.access_token))?
+                let token = oauth_client.get_access_token().map_err(|err| {
+                    print_auth_triage(auth_config, None);
+                    anyhow!(err)
+                })?;
+
+                Credentials::with_access_token(token.access_token)
             } else {
                 anyhow::bail!(msg);
             }

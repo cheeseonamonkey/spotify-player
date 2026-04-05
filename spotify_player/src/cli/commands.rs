@@ -147,7 +147,9 @@ pub fn init_like_command() -> Command {
 }
 
 pub fn init_authenticate_command() -> Command {
-    Command::new("authenticate").about("Authenticate the application")
+    Command::new("authenticate")
+        .about("Authenticate the application")
+        .after_help("If auth fails, verify client_id and login_redirect_uri. Use 127.0.0.1, not localhost.")
 }
 
 pub fn init_generate_command() -> Command {
